@@ -88,6 +88,8 @@ void triangleCountParallelStrat1(Graph &g, int world_size, int world_rank)
         for (int i = 0; i < world_size; i++) {
             global_count += counts[i];
         }
+        delete [] counts;
+        counts = nullptr;
     }
 
     double communication_time = t2.stop();

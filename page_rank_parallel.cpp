@@ -87,39 +87,86 @@ void pageRankParallelStrat1(Graph &g, int max_iters, int world_rank, int world_s
         // Synchronization phase 1 start
         timer t2;
         t2.start();
-        // for each vertex 'u' allocated to P, aggregate (i.e., sum up) the value of next_page_rank[u] from all processes
-        if (world_rank) {
-            // All non-root processes send ALL of pr_next to the root process.
-            MPI_Send(pr_next, n, MPI_PR_TYPE, 0, 0, MPI_COMM_WORLD);
 
-            // Receive subset from root.
-            uintV start = vertex_boundaries[world_rank - 1];
-            uintV end = (world_rank < world_size - 1) ? vertex_boundaries[world_rank] : n;
-            uintV count = end - start;
-            MPI_Recv(&pr_next[start], count, MPI_PR_TYPE, 0, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+        // The root process sums up the next_page_rank value for every vertex in the graph using MPI_Reduce().
+        if (world_rank == 0) {
+            MPI_Reduce(MPI_IN_PLACE, pr_next, n, MPI_PR_TYPE, MPI_SUM, 0, MPI_COMM_WORLD);
         }
         else {
-            // The root process receives these and sums them all together, including its own local pr_next.
-            for (int i = 1; i < world_size; i++) {
-                PageRankType* tmp = new PageRankType[n];
-                MPI_Recv(tmp, n, MPI_PR_TYPE, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-                for (int j = 0; j < n; j++) {
-                    pr_next[j] += tmp[j];
-                }
-
-
-                delete[] tmp;
-                tmp = nullptr;
-            }
-
-            // The root process sends back the corresponding SUBSET of pr_next to the non-root processes.
+            MPI_Reduce(pr_next, pr_next, n, MPI_PR_TYPE, MPI_SUM, 0, MPI_COMM_WORLD);
+        }
+        // Then, the root process sends the aggregated next_page_rank value of each vertex to its appropriate process.
+        //     For example, if vertex v is allocated to process P1, the aggregated next_page_rank[v] is sent only to P1.
+        // The root process sends back the corresponding SUBSET of pr_next to the non-root processes.
+        int* counts = nullptr;
+        int* displacements = nullptr;
+        if (world_rank == 0) {
+            counts = new int[world_size];
+            displacements = new int[world_size];
+            uintV start_vertex = 0;
+            uintV end_vertex = vertex_boundaries[0];
+            uintV count = end_vertex - start_vertex;
+            displacements[0] = start_vertex;
+            counts[0] = count;
+            // std::printf("count[%d] = %d\n", 0, count);
+            // std::printf("displacements[%d] = %d\n", 0, start_vertex);
             for (int i = 1; i < world_size; i++) {
                 uintV start = vertex_boundaries[i - 1];
                 uintV end = (i < world_size - 1) ? vertex_boundaries[i] : n;
                 uintV count = end - start;
-                MPI_Send(&pr_next[start], count, MPI_PR_TYPE, i, 0, MPI_COMM_WORLD);
+                displacements[i] = start;
+                counts[i] = count;
+                // std::printf("count[%d] = %d\n", i, count);
+                // std::printf("displacements[%d] = %d\n", i, start);
             }
         }
+
+        uintV start, end, count;
+        if (world_rank) {
+            start = vertex_boundaries[world_rank - 1];
+            end = (world_rank < world_size - 1) ? vertex_boundaries[world_rank] : n;
+            count = end - start;
+        }
+        else {
+            start = 0;
+            end = vertex_boundaries[0];
+            count = end - start;
+        }
+        if (world_rank == 0) {
+            PageRankType* a = new PageRankType[n];
+            MPI_Scatterv(pr_next,
+                        counts,
+                        displacements,
+                        MPI_PR_TYPE,
+                        a,
+                        n,
+                        MPI_PR_TYPE,
+                        0,
+                        MPI_COMM_WORLD);
+            delete[] a;
+            a = nullptr;
+        }
+        else {
+            // std::printf("rank = %d\nn=%d\ncount = %d\n", world_rank, n, count);
+            MPI_Scatterv(nullptr,
+                        nullptr,
+                        nullptr,
+                        MPI_PR_TYPE,
+                        &pr_next[start],
+                        count,
+                        MPI_PR_TYPE,
+                        0,
+                        MPI_COMM_WORLD);
+        }
+
+
+        if (world_rank == 0) {
+            delete[] displacements;
+            delete[] counts;
+            displacements = nullptr;
+            counts = nullptr;
+        }
+
         communication_time += t2.stop();
         // Synchronization phase 1 end.
 
@@ -149,27 +196,16 @@ void pageRankParallelStrat1(Graph &g, int max_iters, int world_rank, int world_s
     for (uintV v = start_vertex; v < end_vertex; v++) {
         local_sum += pr_curr[v];
     }
-    if (world_rank) {
-        MPI_Send(&local_sum,
-                 1,
-                 MPI_PR_TYPE,
-                 0,
-                 0,
-                 MPI_COMM_WORLD);
-    }
-    else {
-        PageRankType sum_of_page_ranks = 0;
-        for (int i = 1; i < world_size; i++) {
-            PageRankType sum;
-            MPI_Recv(&sum, 1, MPI_PR_TYPE, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            sum_of_page_ranks += sum;
-        }
-        sum_of_page_ranks += local_sum;
 
-        time_taken = t1.stop();
+    PageRankType sum_of_page_ranks = 0;
+
+    MPI_Reduce(&local_sum, &sum_of_page_ranks, 1, MPI_PR_TYPE, MPI_SUM, 0, MPI_COMM_WORLD);
+    time_taken = t1.stop();
+    if (world_rank == 0) {
         std::printf("Sum of page rank : " PR_FMT "\n", sum_of_page_ranks);
         std::printf("Time taken (in seconds) : %f\n", time_taken);
     }
+
 
     delete[] pr_curr;
     delete[] pr_next;
