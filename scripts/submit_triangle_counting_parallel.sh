@@ -6,4 +6,4 @@
 #SBATCH --ntasks=4
 #SBATCH --mem=10G
 
-srun /home/bwhoward/cmpt-431/assignments/5/ds-a5/triangle_counting_parallel
+srun /home/bwhoward/cmpt-431/assignments/5/ds-a5/triangle_counting_parallel --strategy 2
