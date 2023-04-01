@@ -6,4 +6,4 @@
 #SBATCH --ntasks=4
 #SBATCH --mem=10G
 
-srun /home/bwhoward/cmpt-431/assignments/5/ds-a5/page_rank_parallel
+srun /home/bwhoward/cmpt-431/assignments/5/ds-a5/page_rank_parallel --strategy 2

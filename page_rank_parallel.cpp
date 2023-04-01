@@ -213,6 +213,134 @@ void pageRankParallelStrat1(Graph &g, int max_iters, int world_rank, int world_s
     pr_next = nullptr;
 }
 
+void pageRankParallelStrat2(Graph &g, int max_iters, int world_rank, int world_size)
+{
+    uintV n = g.n_;
+    uintV m = g.m_;
+    double time_taken;
+    timer t1;
+    PageRankType *pr_curr = new PageRankType[n];
+    PageRankType *pr_next = new PageRankType[n];
+
+    t1.start();
+    for (uintV i = 0; i < n; i++) {
+        pr_curr[i] = INIT_PAGE_RANK;
+        pr_next[i] = 0.0;
+    }
+
+    // Determine subsets of vertices to work on per process.
+    uintV start_vertex = 0;
+    uintV end_vertex = 0;
+    std::vector<uintV> vertex_boundaries; // Need for later to distribute vertex subsets from root to non-root processes.
+
+    for (int i = 0; i < world_size; i++) {
+        start_vertex = end_vertex;
+        long count = 0;
+        while (end_vertex < n) {
+            count += g.vertices_[end_vertex].getOutDegree();
+            end_vertex++;
+            if (count >= m / world_size) {
+                if (i <= world_size - 1) vertex_boundaries.push_back(end_vertex);
+                break;
+            }
+        }
+    }
+    if (world_rank == 0) {
+        start_vertex = 0;
+        end_vertex = vertex_boundaries[0];
+    }
+    else if (world_rank < world_size - 1) {
+        start_vertex = vertex_boundaries[world_rank - 1];
+        end_vertex = vertex_boundaries[world_rank];
+    }
+    else {
+        start_vertex = vertex_boundaries[world_rank - 1];
+        end_vertex = n;
+    }
+
+    double communication_time = 0.0;
+    long edges_processed = 0;
+    for (int i = 0; i < max_iters; i++) {
+        for (uintV u = start_vertex; u < end_vertex; u++) {
+            uintE out_degree = g.vertices_[u].getOutDegree();
+            edges_processed += out_degree;
+            for (uintE i = 0; i < out_degree; i++) {
+                uintV v = g.vertices_[u].getOutNeighbor(i);
+                pr_next[v] += pr_curr[u] / out_degree;
+            }
+        }
+
+        // Synchronization phase 1 start
+        timer t2;
+        t2.start();
+
+        uintV start, end, count;
+        for (int rank = 0; rank < world_size; rank++) {
+            if (rank) {
+                start = vertex_boundaries[rank - 1];
+                end = (rank < world_size - 1) ? vertex_boundaries[rank] : n;
+                count = end - start;
+            }
+            else {
+                start = 0;
+                end = vertex_boundaries[0];
+                count = end - start;
+            }
+            if (world_rank == rank) {
+                MPI_Reduce(MPI_IN_PLACE, &pr_next[start], count, MPI_PR_TYPE, MPI_SUM, rank, MPI_COMM_WORLD);
+            }
+            else {
+                MPI_Reduce(&pr_next[start], &pr_next[start], count, MPI_PR_TYPE, MPI_SUM, rank, MPI_COMM_WORLD);
+            }
+        }
+
+
+        communication_time += t2.stop();
+        // Synchronization phase 1 end.
+
+        for (uintV v = start_vertex; v < end_vertex; v++) {
+            pr_curr[v] = PAGE_RANK(pr_next[v]);
+        }
+        for (uintV v = 0; v < n; v++) {
+            pr_next[v] = 0;
+        }
+    }
+
+
+
+
+    if (world_rank == 0) {
+        std::printf("rank, num_edges, communication_time\n");
+    }
+    // For every thread, print the following statistics:
+    // rank, num_edges, communication_time
+    // 0, 344968860, 1.297778
+    // 1, 344968860, 1.247763
+    // 2, 344968860, 0.956243
+    // 3, 344968880, 0.467028
+    std::printf("%d, %ld, %f\n", world_rank, edges_processed, communication_time);
+
+    PageRankType local_sum = 0;
+    for (uintV v = start_vertex; v < end_vertex; v++) {
+        local_sum += pr_curr[v];
+    }
+
+    PageRankType sum_of_page_ranks = 0;
+
+    MPI_Reduce(&local_sum, &sum_of_page_ranks, 1, MPI_PR_TYPE, MPI_SUM, 0, MPI_COMM_WORLD);
+    time_taken = t1.stop();
+    if (world_rank == 0) {
+        std::printf("Sum of page rank : " PR_FMT "\n", sum_of_page_ranks);
+        std::printf("Time taken (in seconds) : %f\n", time_taken);
+    }
+
+
+    delete[] pr_curr;
+    delete[] pr_next;
+    pr_curr = nullptr;
+    pr_next = nullptr;
+}
+
 int main(int argc, char *argv[])
 {
     cxxopts::Options options("page_rank_push", "Calculate page_rank using serial and parallel execution");
@@ -249,6 +377,9 @@ int main(int argc, char *argv[])
     switch (strategy) {
         case 1:
             pageRankParallelStrat1(g, max_iterations, world_rank, world_size);
+            break;
+        case 2:
+            pageRankParallelStrat2(g, max_iterations, world_rank, world_size);
             break;
         default:
             std::printf("Strategy %d has not been implemented.\n", strategy);
