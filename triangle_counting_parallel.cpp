@@ -77,18 +77,19 @@ void triangleCountParallelStrat1(Graph &g, int world_size, int world_rank)
     // Synchronization phase start.
     timer t2;
     t2.start();
+
+    long* counts = nullptr;
+    if (world_rank == 0) {
+        counts = new long[world_size];
+    }
+    MPI_Gather(&local_count, 1, MPI_LONG, counts, 1, MPI_LONG, 0, MPI_COMM_WORLD);
     if (world_rank == 0) {
         // Add up the local counts from all processes.
-        for (int i = 1; i < world_size; i++) {
-            long count;
-            MPI_Recv(&count, 1, MPI_LONG, i, 0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-            global_count += count;
+        for (int i = 0; i < world_size; i++) {
+            global_count += counts[i];
         }
-        global_count += local_count;
     }
-    else {
-        MPI_Send(&local_count, 1, MPI_LONG, 0, 0, MPI_COMM_WORLD);
-    }
+
     double communication_time = t2.stop();
     // Synchronization phase end.
 
